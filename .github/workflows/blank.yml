@@ -108,6 +108,21 @@ jobs:
         fi
         echo "mods=${MODS}" >> "$GITHUB_OUTPUT"
 
+    - name: Snapshot pods before module upgrade
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "== Deployments =="; kubectl get deploy -n default --kubeconfig "$KUBECONFIG" -o wide || true
+        echo "== Pods ==";        kubectl get pods   -n default --kubeconfig "$KUBECONFIG" -o wide || true
+        echo "== Events ==";      kubectl get events -n default --kubeconfig "$KUBECONFIG" --sort-by=.lastTimestamp | tail -n 200 || true
+
+        # Pokud existují nějaké Odoo pody, vypiš detail a logy
+        for p in $(kubectl get pods -n default -l app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/name=odoo --kubeconfig "$KUBECONFIG" -o name); do
+          echo "==== DESCRIBE $p ===="; kubectl describe "$p" -n default --kubeconfig "$KUBECONFIG" || true
+          echo "==== LOGS $p ====";     kubectl logs "$p" -n default --kubeconfig "$KUBECONFIG" --all-containers --tail=200 || true
+        done
+
 
     - name: Upgrade/install Odoo modules
       shell: bash
