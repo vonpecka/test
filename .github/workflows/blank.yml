@@ -16,6 +16,7 @@ jobs:
       KUBECONFIG: ${{ github.workspace }}/kubeconfig
       IMAGE_REPO: ghcr.io/${{ github.repository }}/odoo
       IMAGE_TAG: ${{ github.sha }}
+      GITHUB_TOKEN: ${{ github.token }}
 
     steps:
     - name: Checkout repository
@@ -60,15 +61,36 @@ jobs:
           --set image.tag=${{ github.sha }}
 
     - name: Wait for deployment
+      shell: bash
       run: |
-        kubectl rollout status deployment/mikulas-odoo-odoo -n default --timeout=10m --kubeconfig "$KUBECONFIG"
+        set -euo pipefail
+
+        DEPLOY=$(kubectl get deploy -n default \
+          -l app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/name=odoo \
+          -o jsonpath='{.items[0].metadata.name}' \
+          --kubeconfig "$KUBECONFIG")
+
+        if [ -z "${DEPLOY:-}" ]; then
+          echo "Nenašel jsem žádný Deployment pro release mikulas-odoo v ns default."
+          echo "Dostupné deploymenty:"
+          kubectl get deploy -n default --kubeconfig "$KUBECONFIG"
+          exit 1
+        fi
+
+        echo "Čekám na rollout deploymentu: $DEPLOY"
+        kubectl rollout status deployment/"$DEPLOY" -n default --timeout=10m --kubeconfig "$KUBECONFIG"
+
+    - name: Helm status
+      if: always()
+      run: |
+        helm status mikulas-odoo -n default --kubeconfig "$KUBECONFIG" || true
+        kubectl get deploy,po,svc,pvc -n default --kubeconfig "$KUBECONFIG" -o wide || true
 
     # ===== Automatické nainstalování/aktualizace addonů =====
     - name: Compute addon list
       id: mods
       shell: bash
       run: |
-        # vyber názvy adresářů v ./addons, které obsahují __manifest__.py (technický název modulu = název složky)
         if [ -d addons ]; then
           MODS=$(find addons -maxdepth 1 -mindepth 1 -type d -exec test -f '{}/__manifest__.py' \; -print | xargs -n1 basename | paste -sd, -)
         fi
@@ -83,7 +105,6 @@ jobs:
           --kubeconfig "$KUBECONFIG" | awk '{print $1}')
         [ -n "$POD" ] || { echo "Nenalezl jsem běžící Odoo pod"; exit 1; }
 
-        # připrav příkazy -u all + případné -i <seznam_novych_modulu>
         INSTALL="${{ steps.mods.outputs.mods }}"
         if [ -n "$INSTALL" ]; then
           EXTRA="-i $INSTALL"
