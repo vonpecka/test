@@ -91,10 +91,23 @@ jobs:
       id: mods
       shell: bash
       run: |
+        set -euo pipefail
+        mods=()
         if [ -d addons ]; then
-          MODS=$(find addons -maxdepth 1 -mindepth 1 -type d -exec test -f '{}/__manifest__.py' \; -print | xargs -n1 basename | paste -sd, -)
+          shopt -s nullglob
+          for d in addons/*; do
+            [ -d "$d" ] && [ -f "$d/__manifest__.py" ] && mods+=("$(basename "$d")")
+          done
         fi
-        echo "mods=${MODS:-}" >> $GITHUB_OUTPUT
+        if [ ${#mods[@]} -gt 0 ]; then
+          MODS=$(IFS=, ; echo "${mods[*]}")
+          echo "Found addons: ${MODS}"
+        else
+          MODS=""
+          echo "No addons with __manifest__.py found in ./addons"
+        fi
+        echo "mods=${MODS}" >> "$GITHUB_OUTPUT"
+
 
     - name: Upgrade/install Odoo modules
       shell: bash
@@ -111,9 +124,9 @@ jobs:
           echo "Instaluji nové moduly: $INSTALL"
         else
           EXTRA=""
-          echo "Žádné nové moduly v ./addons (pouze update existujících)."
+          echo "Žádné nové moduly (provedu jen -u all)."
         fi
 
         kubectl exec -n default "$POD" --kubeconfig "$KUBECONFIG" -- bash -lc \
           "/opt/bitnami/odoo/bin/odoo -c /opt/bitnami/odoo/conf/odoo.conf --workers 0 \
-           -d bitnami_odoo ${EXTRA} -u all --stop-after-init"
+          -d bitnami_odoo ${EXTRA} -u all --stop-after-init"
