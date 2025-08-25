@@ -8,10 +8,15 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    environment: prostredicko        # <-- jméno env z GitHubu
+    environment: prostredicko
+    permissions:
+      contents: read
+      packages: write
     env:
       KUBECONFIG: ${{ github.workspace }}/kubeconfig
-      
+      IMAGE_REPO: ghcr.io/${{ github.repository }}/odoo
+      IMAGE_TAG: ${{ github.sha }}
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -20,37 +25,72 @@ jobs:
       uses: azure/setup-kubectl@v3
       with:
         version: 'v1.30.0'
+
     - name: Set up Helm
       uses: azure/setup-helm@v3
 
     - name: Write kubeconfig
       shell: bash
       run: |
-        echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ${{ github.workspace }}/kubeconfig
-        chmod 600 ${{ github.workspace }}/kubeconfig
+        echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > "$KUBECONFIG"
+        chmod 600 "$KUBECONFIG"
 
+    # ===== Build & push image s addony =====
+    - name: Log in to GHCR
+      run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+    - name: Build and push Odoo image (with addons)
+      run: |
+        docker build -t "$IMAGE_REPO:$IMAGE_TAG" .
+        docker push "$IMAGE_REPO:$IMAGE_TAG"
+
+    # ===== Helm upgrade na nový image =====
     - name: Upgrade Odoo release
-      env:
-        KUBECONFIG: ${{ github.workspace }}/kubeconfig
       run: |
         helm repo add bitnami https://charts.bitnami.com/bitnami
         helm upgrade --install mikulas-odoo bitnami/odoo \
           --version 28.2.10 \
           --namespace default \
           --reuse-values \
-          --wait
+          --set image.repository="$IMAGE_REPO" \
+          --set image.tag="$IMAGE_TAG" \
+          --wait --timeout 15m --atomic \
+          --kubeconfig "$KUBECONFIG"
 
     - name: Wait for deployment
-      env:
-        KUBECONFIG: ${{ github.workspace }}/kubeconfig
       run: |
-        kubectl rollout status deployment/mikulas-odoo -n default
+        kubectl rollout status deployment/mikulas-odoo-odoo -n default --timeout=10m --kubeconfig "$KUBECONFIG"
 
-    - name: Upgrade Odoo modules
-      env:
-        KUBECONFIG: ${{ github.workspace }}/kubeconfig
+    # ===== Automatické nainstalování/aktualizace addonů =====
+    - name: Compute addon list
+      id: mods
+      shell: bash
       run: |
-        POD=$(kubectl get pods -l app.kubernetes.io/component=odoo -l app.kubernetes.io/instance=mikulas-odoo -n default -o jsonpath='{.items[0].metadata.name}')
-        kubectl exec -n default $POD -- \
-          /opt/bitnami/odoo/bin/odoo -c /opt/bitnami/odoo/conf/odoo.conf --workers 0 \
-          -d bitnami_odoo -u all --stop-after-init
+        # vyber názvy adresářů v ./addons, které obsahují __manifest__.py (technický název modulu = název složky)
+        if [ -d addons ]; then
+          MODS=$(find addons -maxdepth 1 -mindepth 1 -type d -exec test -f '{}/__manifest__.py' \; -print | xargs -n1 basename | paste -sd, -)
+        fi
+        echo "mods=${MODS:-}" >> $GITHUB_OUTPUT
+
+    - name: Upgrade/install Odoo modules
+      shell: bash
+      run: |
+        POD=$(kubectl get pods -n default \
+          -l app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/component=odoo \
+          -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' \
+          --kubeconfig "$KUBECONFIG" | awk '{print $1}')
+        [ -n "$POD" ] || { echo "Nenalezl jsem běžící Odoo pod"; exit 1; }
+
+        # připrav příkazy -u all + případné -i <seznam_novych_modulu>
+        INSTALL="${{ steps.mods.outputs.mods }}"
+        if [ -n "$INSTALL" ]; then
+          EXTRA="-i $INSTALL"
+          echo "Instaluji nové moduly: $INSTALL"
+        else
+          EXTRA=""
+          echo "Žádné nové moduly v ./addons (pouze update existujících)."
+        fi
+
+        kubectl exec -n default "$POD" --kubeconfig "$KUBECONFIG" -- bash -lc \
+          "/opt/bitnami/odoo/bin/odoo -c /opt/bitnami/odoo/conf/odoo.conf --workers 0 \
+           -d bitnami_odoo ${EXTRA} -u all --stop-after-init"
