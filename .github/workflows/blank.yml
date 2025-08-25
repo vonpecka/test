@@ -11,7 +11,7 @@ jobs:
     environment: production        # <-- jméno env z GitHubu
     env:
       KUBECONFIG: ${{ github.workspace }}/kubeconfig
-      
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -27,9 +27,7 @@ jobs:
         # Uložení kubeconfigu (tajný údaj) na disk
     - name: Write kubeconfig
       shell: bash
-      run: |
-        echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ${{ github.workspace }}/kubeconfig
-        chmod 600 ${{ github.workspace }}/kubeconfig
+      run: echo "${{ secrets.KUBECONFIG }}" > ${{ github.workspace }}/kubeconfig
 
     # Helm upgrade – použijeme reuse-values, aby se nezměnily ostatní parametry. Image tag dáte na SHA commit nebo „latest“.
     - name: Upgrade Odoo release
