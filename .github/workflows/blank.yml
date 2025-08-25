@@ -21,9 +21,12 @@ jobs:
     - name: Set up Helm
       uses: azure/setup-helm@v3
 
-    # Uložení kubeconfigu (tajný údaj) na disk
+        # Uložení kubeconfigu (tajný údaj) na disk
     - name: Write kubeconfig
-      run: echo "${{ secrets.KUBECONFIG }}" > ${{ github.workspace }}/kubeconfig
+      shell: bash
+      run: |
+        echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ${{ github.workspace }}/kubeconfig
+        chmod 600 ${{ github.workspace }}/kubeconfig
 
     # Helm upgrade – použijeme reuse-values, aby se nezměnily ostatní parametry. Image tag dáte na SHA commit nebo „latest“.
     - name: Upgrade Odoo release
