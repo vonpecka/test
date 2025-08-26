@@ -85,7 +85,6 @@ jobs:
       run: |
         set -euo pipefail
         sel='app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/name=odoo'
-        # počkej až 10 minut na condition=Ready
         kubectl wait --for=condition=Ready pod -l "$sel" -n default --timeout=10m --kubeconfig "$KUBECONFIG"
 
 
@@ -139,18 +138,18 @@ jobs:
       run: |
         set -euo pipefail
         sel='app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/name=odoo'
-        POD=$(kubectl get pods -n default -l "$sel" --kubeconfig "$KUBECONFIG" \
-              -o jsonpath='{.items[?(@.status.conditions[?(@.type=="Ready"&&@.status=="True")])].metadata.name}' \
-              | awk '{print $1}')
+        POD=$(kubectl get pod -n default -l "$sel" \
+              --field-selector=status.phase=Running \
+              -o jsonpath='{.items[0].metadata.name}' \
+              --kubeconfig "$KUBECONFIG")
         if [ -z "${POD:-}" ]; then
-          echo "Pod ještě není Ready, zkouším vybrat jakýkoli běžící pod…"
-          POD=$(kubectl get pods -n default -l "$sel" --kubeconfig "$KUBECONFIG" \
-                -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' \
-                | awk '{print $1}')
+          echo "Nenalezl jsem Running pod, dumpuji stav:"
+          kubectl get pod -n default -l "$sel" -o wide --kubeconfig "$KUBECONFIG" || true
+          exit 1
         fi
-        [ -n "${POD:-}" ] || { echo "Nenalezl jsem Odoo pod"; exit 1; }
 
-        sleep 5
+        # malá pauza po readiness (někdy pomůže)
+        sleep 3
 
         kubectl exec -n default "$POD" --kubeconfig "$KUBECONFIG" -- bash -lc \
           "/opt/bitnami/odoo/bin/odoo -c /opt/bitnami/odoo/conf/odoo.conf --workers 0 \
