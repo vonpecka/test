@@ -52,13 +52,19 @@ jobs:
         helm upgrade --install mikulas-odoo bitnami/odoo \
           --version 28.2.10 \
           --namespace default \
+          --create-namespace \
           --reuse-values \
-          --wait --timeout 15m --atomic \
+          --wait \
+          --timeout 8m \
           --kubeconfig "$KUBECONFIG" \
           --set global.security.allowInsecureImages=true \
           --set image.registry=ghcr.io \
           --set image.repository=${{ github.repository }}/odoo \
-          --set image.tag=${{ github.sha }}
+          --set image.tag=${{ github.sha }} \
+          --set postgresql.primary.persistence.storageClass=do-block-storage \
+          --set persistence.storageClass=do-block-storage \
+          --set service.type=ClusterIP
+
 
     - name: Wait for deployment
       shell: bash
@@ -68,8 +74,12 @@ jobs:
           -l app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/name=odoo \
           -o jsonpath='{.items[0].metadata.name}' \
           --kubeconfig "$KUBECONFIG")
-        echo "Deployment: $DEPLOY"
-        kubectl rollout status deployment/"$DEPLOY" -n default --timeout=15m --kubeconfig "$KUBECONFIG"
+
+        kubectl rollout status deployment/"$DEPLOY" -n default --timeout=20m --kubeconfig "$KUBECONFIG"
+        kubectl wait --for=condition=Ready pod \
+          -l app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/name=odoo \
+          -n default --timeout=10m --kubeconfig "$KUBECONFIG"
+
 
     - name: Wait for Odoo pod to be Ready
       shell: bash
