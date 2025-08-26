@@ -64,21 +64,21 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-
         DEPLOY=$(kubectl get deploy -n default \
           -l app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/name=odoo \
           -o jsonpath='{.items[0].metadata.name}' \
           --kubeconfig "$KUBECONFIG")
+        echo "Deployment: $DEPLOY"
+        kubectl rollout status deployment/"$DEPLOY" -n default --timeout=15m --kubeconfig "$KUBECONFIG"
 
-        if [ -z "${DEPLOY:-}" ]; then
-          echo "Nenašel jsem žádný Deployment pro release mikulas-odoo v ns default."
-          echo "Dostupné deploymenty:"
-          kubectl get deploy -n default --kubeconfig "$KUBECONFIG"
-          exit 1
-        fi
+    - name: Wait for Odoo pod to be Ready
+      shell: bash
+      run: |
+        set -euo pipefail
+        sel='app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/name=odoo'
+        # počkej až 10 minut na condition=Ready
+        kubectl wait --for=condition=Ready pod -l "$sel" -n default --timeout=10m --kubeconfig "$KUBECONFIG"
 
-        echo "Čekám na rollout deploymentu: $DEPLOY"
-        kubectl rollout status deployment/"$DEPLOY" -n default --timeout=10m --kubeconfig "$KUBECONFIG"
 
     - name: Helm status
       if: always()
@@ -108,21 +108,6 @@ jobs:
         fi
         echo "mods=${MODS}" >> "$GITHUB_OUTPUT"
 
-    - name: Snapshot cluster state
-      if: always()
-      shell: bash
-      run: |
-        set -euo pipefail
-        echo "== Deployments =="; kubectl get deploy -n default --kubeconfig "$KUBECONFIG" -o wide || true
-        echo "== Pods ==";        kubectl get pods   -n default --kubeconfig "$KUBECONFIG" -o wide || true
-        echo "== Events ==";      kubectl get events -n default --kubeconfig "$KUBECONFIG" --sort-by=.lastTimestamp | tail -n 200 || true
-
-        sel='app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/name=odoo'
-        for p in $(kubectl get pods -n default -l "$sel" --kubeconfig "$KUBECONFIG" -o name); do
-          echo "==== DESCRIBE $p ===="; kubectl describe "$p" -n default --kubeconfig "$KUBECONFIG" || true
-          echo "==== LOGS $p ====";     kubectl logs "$p" -n default --kubeconfig "$KUBECONFIG" --all-containers --tail=200 || true
-        done
-
 
     - name: Snapshot pods before module upgrade
       if: always()
@@ -140,24 +125,24 @@ jobs:
         done
 
 
-    - name: Upgrade/install Odoo modules
+    - name: Upgrade Odoo modules
       shell: bash
       run: |
-        POD=$(kubectl get pods -n default \
-          -l app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/component=odoo \
-          -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' \
-          --kubeconfig "$KUBECONFIG" | awk '{print $1}')
-        [ -n "$POD" ] || { echo "Nenalezl jsem běžící Odoo pod"; exit 1; }
-
-        INSTALL="${{ steps.mods.outputs.mods }}"
-        if [ -n "$INSTALL" ]; then
-          EXTRA="-i $INSTALL"
-          echo "Instaluji nové moduly: $INSTALL"
-        else
-          EXTRA=""
-          echo "Žádné nové moduly (provedu jen -u all)."
+        set -euo pipefail
+        sel='app.kubernetes.io/instance=mikulas-odoo,app.kubernetes.io/name=odoo'
+        POD=$(kubectl get pods -n default -l "$sel" --kubeconfig "$KUBECONFIG" \
+              -o jsonpath='{.items[?(@.status.conditions[?(@.type=="Ready"&&@.status=="True")])].metadata.name}' \
+              | awk '{print $1}')
+        if [ -z "${POD:-}" ]; then
+          echo "Pod ještě není Ready, zkouším vybrat jakýkoli běžící pod…"
+          POD=$(kubectl get pods -n default -l "$sel" --kubeconfig "$KUBECONFIG" \
+                -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' \
+                | awk '{print $1}')
         fi
+        [ -n "${POD:-}" ] || { echo "Nenalezl jsem Odoo pod"; exit 1; }
+
+        sleep 5
 
         kubectl exec -n default "$POD" --kubeconfig "$KUBECONFIG" -- bash -lc \
           "/opt/bitnami/odoo/bin/odoo -c /opt/bitnami/odoo/conf/odoo.conf --workers 0 \
-          -d bitnami_odoo ${EXTRA} -u all --stop-after-init"
+          -d bitnami_odoo -u all --stop-after-init"
